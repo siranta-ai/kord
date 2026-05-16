@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/xml"
 	"flag"
 	"fmt"
@@ -87,6 +88,11 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 			if readErr != nil {
 				fmt.Fprintf(os.Stderr, "error reading file %q: %v\n", path, readErr)
 				return nil // Continue the pipeline
+			}
+
+			// Extremely fast binary detection: check for null byte
+			if bytes.IndexByte(content, 0) != -1 {
+				return nil // Skip binary files
 			}
 
 			file := File{
