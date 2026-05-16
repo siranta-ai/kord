@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"encoding/xml"
 	"flag"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // File represents a file to be streamed to XML.
@@ -23,6 +25,9 @@ func main() {
 	ignoreFlag := flag.String("ignore", ".gitignore", "custom ignore file")
 	flag.Parse()
 
+	// Initialize IgnoreEngine
+	ignoreEngine := NewIgnoreEngine(*ignoreFlag)
+
 	// Initialize XML encoder writing directly to stdout
 	encoder := xml.NewEncoder(os.Stdout)
 	encoder.Indent("", "  ")
@@ -38,7 +43,7 @@ func main() {
 	}
 
 	// Run the directory traversal engine stub
-	if err := traverseDirectory(*dirFlag, *ignoreFlag, encoder); err != nil {
+	if err := traverseDirectory(*dirFlag, ignoreEngine, encoder); err != nil {
 		fmt.Fprintf(os.Stderr, "error during directory traversal: %v\n", err)
 		os.Exit(1)
 	}
@@ -61,7 +66,7 @@ func main() {
 
 // traverseDirectory uses filepath.WalkDir to streamingly read and encode files
 // without reading the entire directory into memory.
-func traverseDirectory(targetDir, ignoreFile string, encoder *xml.Encoder) error {
+func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Encoder) error {
 	return filepath.WalkDir(targetDir, func(path string, d fs.DirEntry, err error) error {
 		// Skip unreadable paths safely without crashing the pipeline
 		if err != nil {
@@ -69,7 +74,7 @@ func traverseDirectory(targetDir, ignoreFile string, encoder *xml.Encoder) error
 			return nil
 		}
 
-		if isIgnored(path, d) {
+		if engine.IsIgnored(path, d.IsDir()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -99,8 +104,94 @@ func traverseDirectory(targetDir, ignoreFile string, encoder *xml.Encoder) error
 	})
 }
 
-// isIgnored is a stub function to determine if a path should be skipped.
-func isIgnored(path string, d fs.DirEntry) bool {
-	// TODO: implement logic to parse and match .gitignore rules
+// IgnoreEngine parses and evaluates .gitignore rules without using regexp.
+type IgnoreEngine struct {
+	exactDirs  map[string]bool
+	exactFiles map[string]bool
+	suffixes   []string
+	prefixes   []string
+}
+
+// NewIgnoreEngine reads a .gitignore file and categorizes rules into buckets.
+func NewIgnoreEngine(ignoreFilePath string) *IgnoreEngine {
+	engine := &IgnoreEngine{
+		exactDirs:  make(map[string]bool),
+		exactFiles: make(map[string]bool),
+		suffixes:   make([]string, 0),
+		prefixes:   make([]string, 0),
+	}
+
+	// Always hardcode bypasses
+	engine.exactDirs[".git"] = true
+	engine.exactDirs["node_modules"] = true
+	engine.exactDirs["vendor"] = true
+
+	content, err := os.ReadFile(ignoreFilePath)
+	if err != nil {
+		// If the ignore file doesn't exist or can't be read, return default engine
+		return engine
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		
+		// Ignore comments and empty lines
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		isDirRule := strings.HasSuffix(line, "/")
+		if isDirRule {
+			line = strings.TrimSuffix(line, "/")
+		}
+
+		// Categorize into the four buckets
+		if strings.HasPrefix(line, "*") {
+			engine.suffixes = append(engine.suffixes, strings.TrimPrefix(line, "*"))
+		} else if strings.HasSuffix(line, "*") {
+			engine.prefixes = append(engine.prefixes, strings.TrimSuffix(line, "*"))
+		} else {
+			if isDirRule {
+				engine.exactDirs[line] = true
+			} else {
+				engine.exactFiles[line] = true
+				engine.exactDirs[line] = true // Without trailing slash, can match both file and dir
+			}
+		}
+	}
+
+	return engine
+}
+
+// IsIgnored evaluates if a path should be skipped based on simple string comparisons.
+func (ie *IgnoreEngine) IsIgnored(path string, isDir bool) bool {
+	base := filepath.Base(path)
+
+	// 1. Exact map lookups
+	if isDir {
+		if ie.exactDirs[base] {
+			return true
+		}
+	} else {
+		if ie.exactFiles[base] {
+			return true
+		}
+	}
+
+	// 2. Suffixes
+	for _, sfx := range ie.suffixes {
+		if strings.HasSuffix(base, sfx) {
+			return true
+		}
+	}
+
+	// 3. Prefixes
+	for _, pfx := range ie.prefixes {
+		if strings.HasPrefix(base, pfx) {
+			return true
+		}
+	}
+
 	return false
 }
