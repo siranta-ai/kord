@@ -4,7 +4,9 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // File represents a file to be streamed to XML.
@@ -57,20 +59,48 @@ func main() {
 	fmt.Println()
 }
 
-// traverseDirectory is a stub for the directory traversal engine.
-// It uses a streaming pipeline to write files to the encoder
+// traverseDirectory uses filepath.WalkDir to streamingly read and encode files
 // without reading the entire directory into memory.
 func traverseDirectory(targetDir, ignoreFile string, encoder *xml.Encoder) error {
-	// TODO: Implement streaming directory traversal using filepath.WalkDir
-	// Example of encoding a file streamingly:
-	//
-	// file := File{
-	// 	Path: "stub/path.txt",
-	// 	Body: "stub content...",
-	// }
-	// if err := encoder.Encode(file); err != nil {
-	// 	return err
-	// }
+	return filepath.WalkDir(targetDir, func(path string, d fs.DirEntry, err error) error {
+		// Skip unreadable paths safely without crashing the pipeline
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error accessing path %q: %v\n", path, err)
+			return nil
+		}
 
-	return nil
+		if isIgnored(path, d) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Process only regular files
+		if !d.IsDir() {
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "error reading file %q: %v\n", path, readErr)
+				return nil // Continue the pipeline
+			}
+
+			file := File{
+				Path: path,
+				Body: string(content),
+			}
+
+			if encErr := encoder.Encode(file); encErr != nil {
+				// Handle encoding errors silently via os.Stderr without killing the stream
+				fmt.Fprintf(os.Stderr, "error encoding file %q: %v\n", path, encErr)
+			}
+		}
+
+		return nil
+	})
+}
+
+// isIgnored is a stub function to determine if a path should be skipped.
+func isIgnored(path string, d fs.DirEntry) bool {
+	// TODO: implement logic to parse and match .gitignore rules
+	return false
 }
