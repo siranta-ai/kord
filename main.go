@@ -25,6 +25,7 @@ func main() {
 	// Parse CLI flags
 	dirFlag := flag.String("dir", ".", "target directory")
 	ignoreFlag := flag.String("ignore", ".gitignore", "custom ignore file")
+	maxSize := flag.Int64("max-size", 50000, "Maximum file size in bytes to include content (default 50KB)")
 	flag.Parse()
 
 	// Initialize IgnoreEngine
@@ -45,7 +46,7 @@ func main() {
 	}
 
 	// Run the directory traversal engine stub
-	if err := traverseDirectory(*dirFlag, ignoreEngine, encoder); err != nil {
+	if err := traverseDirectory(*dirFlag, ignoreEngine, encoder, *maxSize); err != nil {
 		fmt.Fprintf(os.Stderr, "error during directory traversal: %v\n", err)
 		os.Exit(1)
 	}
@@ -68,7 +69,7 @@ func main() {
 
 // traverseDirectory uses filepath.WalkDir to streamingly read and encode files
 // without reading the entire directory into memory.
-func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Encoder) error {
+func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Encoder, maxSize int64) error {
 	return filepath.WalkDir(targetDir, func(path string, d fs.DirEntry, err error) error {
 		// Skip unreadable paths safely without crashing the pipeline
 		if err != nil {
@@ -85,6 +86,33 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 
 		// Process only regular files
 		if !d.IsDir() {
+			// Get file info for size check
+			info, err := d.Info()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error getting info for %q: %v\n", path, err)
+				return nil
+			}
+
+			// 1. The hard size limit
+			if info.Size() > maxSize {
+				// Write the path, but explicitly mark the content as omitted to save context
+				// Do NOT read the file into memory.
+				fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (Size: %d bytes exceeds limit)\n", path, info.Size())
+
+				// Emit an empty tag so the LLM knows the file exists, but doesn't waste tokens on it
+				err = encoder.EncodeToken(xml.StartElement{
+					Name: xml.Name{Local: "file"},
+					Attr: []xml.Attr{
+						{Name: xml.Name{Local: "path"}, Value: path},
+						{Name: xml.Name{Local: "omitted"}, Value: "size_limit_exceeded"},
+					},
+				})
+				if err == nil {
+					encoder.EncodeToken(xml.EndElement{Name: xml.Name{Local: "file"}})
+				}
+				return nil
+			}
+
 			f, readErr := os.Open(path)
 			if readErr != nil {
 				fmt.Fprintf(os.Stderr, "error opening file %q: %v\n", path, readErr)

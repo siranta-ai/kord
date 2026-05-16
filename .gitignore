@@ -1,0 +1,33 @@
+# Node dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Auto-generated scripts and bundled files
+*-player-script.js
+*.bundle.js
+*.min.js
+
+# Build artifacts
+dist/
+build/
+.next/
+out/
+
+# IDE and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+temp/
+cache/
