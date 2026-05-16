@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -84,26 +85,65 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 
 		// Process only regular files
 		if !d.IsDir() {
-			content, readErr := os.ReadFile(path)
+			f, readErr := os.Open(path)
 			if readErr != nil {
-				fmt.Fprintf(os.Stderr, "error reading file %q: %v\n", path, readErr)
+				fmt.Fprintf(os.Stderr, "error opening file %q: %v\n", path, readErr)
 				return nil // Continue the pipeline
 			}
 
-			// Extremely fast binary detection: check for null byte
-			if bytes.IndexByte(content, 0) != -1 {
-				return nil // Skip binary files
+			// Ensure we only read a small prefix for binary detection
+			prefix := make([]byte, 512)
+			n, _ := f.Read(prefix)
+			if n > 0 {
+				if bytes.IndexByte(prefix[:n], 0) != -1 {
+					f.Close()
+					return nil // Skip binary files
+				}
 			}
 
-			file := File{
-				Path: path,
-				Body: string(content),
+			// Stream the file content to the XML encoder in chunks to avoid buffering large files
+			start := xml.StartElement{Name: xml.Name{Local: "file"}, Attr: []xml.Attr{{Name: xml.Name{Local: "path"}, Value: path}}}
+			if err := encoder.EncodeToken(start); err != nil {
+				fmt.Fprintf(os.Stderr, "error writing file start %q: %v\n", path, err)
+				f.Close()
+				return nil
 			}
 
-			if encErr := encoder.Encode(file); encErr != nil {
-				// Handle encoding errors silently via os.Stderr without killing the stream
-				fmt.Fprintf(os.Stderr, "error encoding file %q: %v\n", path, encErr)
+			// Flush encoder so the start token is written before raw streaming
+			if err := encoder.Flush(); err != nil {
+				fmt.Fprintf(os.Stderr, "error flushing before raw write for %q: %v\n", path, err)
 			}
+
+			// Write CDATA start and stream raw bytes directly to stdout to avoid buffering
+			if _, err := fmt.Fprint(os.Stdout, "<![CDATA["); err != nil {
+				fmt.Fprintf(os.Stderr, "error writing cdata start for %q: %v\n", path, err)
+			}
+
+			// If we already read some prefix bytes, write them first
+			if n > 0 {
+				if _, err := os.Stdout.Write(prefix[:n]); err != nil {
+					fmt.Fprintf(os.Stderr, "error writing prefix for %q: %v\n", path, err)
+				}
+			}
+
+			// Continue streaming the rest of the file directly using a single preallocated buffer
+			buf := make([]byte, 32*1024)
+			if _, err := io.CopyBuffer(os.Stdout, f, buf); err != nil {
+				if err != io.EOF {
+					fmt.Fprintf(os.Stderr, "error copying file %q: %v\n", path, err)
+				}
+			}
+
+			// Close CDATA and then write end element token via encoder to remain well-formed
+			if _, err := fmt.Fprint(os.Stdout, "]]>"); err != nil {
+				fmt.Fprintf(os.Stderr, "error writing cdata end for %q: %v\n", path, err)
+			}
+
+			if err := encoder.EncodeToken(start.End()); err != nil {
+				fmt.Fprintf(os.Stderr, "error writing file end %q: %v\n", path, err)
+			}
+
+			f.Close()
 		}
 
 		return nil
@@ -141,7 +181,7 @@ func NewIgnoreEngine(ignoreFilePath string) *IgnoreEngine {
 	scanner := bufio.NewScanner(strings.NewReader(string(content)))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		
+
 		// Ignore comments and empty lines
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
