@@ -13,6 +13,19 @@ import (
 	"strings"
 )
 
+const startupBanner = `
+░██                                           ░██ 
+░██                                           ░██ 
+░██    ░██    ░███████     ░██░████     ░████████ 
+░██   ░██    ░██    ░██    ░███        ░██    ░██ 
+░███████     ░██    ░██    ░██         ░██    ░██ 
+░██   ░██    ░██    ░██    ░██         ░██   ░███ 
+░██    ░██    ░███████     ░██          ░█████░██ 
+                                                  
+                                                                 
+Kord by Siranta - streaming repository to XML
+`
+
 // File represents a file to be streamed to XML.
 // It has a path attribute and the content as a CDATA body.
 type File struct {
@@ -22,6 +35,8 @@ type File struct {
 }
 
 func main() {
+	printStartupBanner()
+
 	// Parse CLI flags
 	dirFlag := flag.String("dir", ".", "target directory")
 	ignoreFlag := flag.String("ignore", ".gitignore", "custom ignore file")
@@ -65,6 +80,10 @@ func main() {
 
 	// Add a trailing newline
 	fmt.Println()
+}
+
+func printStartupBanner() {
+	fmt.Fprintln(os.Stderr, startupBanner)
 }
 
 // traverseDirectory uses filepath.WalkDir to streamingly read and encode files
