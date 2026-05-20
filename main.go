@@ -295,6 +295,14 @@ func NewIgnoreEngine(ignoreFilePath string) *IgnoreEngine {
 	engine.exactDirs[".next"] = true
 	engine.exactDirs["dist"] = true
 	engine.exactDirs["build"] = true
+	engine.exactDirs[".gradle"] = true
+	engine.exactDirs["venv"] = true
+	engine.exactDirs[".venv"] = true
+	engine.exactDirs["target"] = true
+	engine.exactDirs["obj"] = true
+	engine.exactDirs["__pycache__"] = true
+	engine.exactDirs[".dart_tool"] = true
+	engine.exactDirs["Pods"] = true
 
 	// Exclude token-trap files by default
 	engine.suffixes = append(engine.suffixes,
