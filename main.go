@@ -97,8 +97,16 @@ func runCoreLogic(targetDir, ignoreFile string, maxSize int64, out io.Writer) {
 		os.Exit(1)
 	}
 
+	// Get output file's FileInfo to avoid reading our own output file
+	var outFileInfo os.FileInfo
+	if outFile, ok := out.(*os.File); ok {
+		if info, err := outFile.Stat(); err == nil {
+			outFileInfo = info
+		}
+	}
+
 	// Run the directory traversal engine stub
-	if err := traverseDirectory(targetDir, ignoreEngine, encoder, maxSize); err != nil {
+	if err := traverseDirectory(targetDir, ignoreEngine, encoder, out, maxSize, outFileInfo); err != nil {
 		fmt.Fprintf(os.Stderr, "error during directory traversal: %v\n", err)
 		os.Exit(1)
 	}
@@ -125,7 +133,7 @@ func printStartupBanner() {
 
 // traverseDirectory uses filepath.WalkDir to streamingly read and encode files
 // without reading the entire directory into memory.
-func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Encoder, maxSize int64) error {
+func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Encoder, out io.Writer, maxSize int64, outFileInfo os.FileInfo) error {
 	return filepath.WalkDir(targetDir, func(path string, d fs.DirEntry, err error) error {
 		// Skip unreadable paths safely without crashing the pipeline
 		if err != nil {
@@ -146,6 +154,12 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 			info, err := d.Info()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error getting info for %q: %v\n", path, err)
+				return nil
+			}
+
+			// Prevent infinite feedback loop by skipping the output file itself
+			if outFileInfo != nil && os.SameFile(info, outFileInfo) {
+				fmt.Fprintf(os.Stderr, "Kord: Skipping output file %s\n", path)
 				return nil
 			}
 
@@ -221,28 +235,28 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 				fmt.Fprintf(os.Stderr, "error flushing before raw write for %q: %v\n", path, err)
 			}
 
-			// Write CDATA start and stream raw bytes directly to stdout to avoid buffering
-			if _, err := fmt.Fprint(os.Stdout, "<![CDATA["); err != nil {
+			// Write CDATA start and stream raw bytes directly to out to avoid buffering
+			if _, err := fmt.Fprint(out, "<![CDATA["); err != nil {
 				fmt.Fprintf(os.Stderr, "error writing cdata start for %q: %v\n", path, err)
 			}
 
 			// If we already read some prefix bytes, write them first
 			if n > 0 {
-				if _, err := os.Stdout.Write(prefix[:n]); err != nil {
+				if _, err := out.Write(prefix[:n]); err != nil {
 					fmt.Fprintf(os.Stderr, "error writing prefix for %q: %v\n", path, err)
 				}
 			}
 
 			// Continue streaming the rest of the file directly using a single preallocated buffer
 			buf := make([]byte, 32*1024)
-			if _, err := io.CopyBuffer(os.Stdout, f, buf); err != nil {
+			if _, err := io.CopyBuffer(out, f, buf); err != nil {
 				if err != io.EOF {
 					fmt.Fprintf(os.Stderr, "error copying file %q: %v\n", path, err)
 				}
 			}
 
 			// Close CDATA and then write end element token via encoder to remain well-formed
-			if _, err := fmt.Fprint(os.Stdout, "]]>"); err != nil {
+			if _, err := fmt.Fprint(out, "]]>"); err != nil {
 				fmt.Fprintf(os.Stderr, "error writing cdata end for %q: %v\n", path, err)
 			}
 
@@ -286,6 +300,7 @@ func NewIgnoreEngine(ignoreFilePath string) *IgnoreEngine {
 	engine.suffixes = append(engine.suffixes,
 		".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
 		".lock", "go.sum", ".min.js", ".min.css", ".map",
+		".exe", ".dll", ".so", ".dylib", ".bin", ".zip", ".tar.gz", ".rar", ".7z", ".pdf", ".pyc", ".class",
 	)
 
 	content, err := os.ReadFile(ignoreFilePath)
