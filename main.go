@@ -37,21 +37,58 @@ type File struct {
 func main() {
 	printStartupBanner()
 
+	if len(os.Args) > 1 && os.Args[1] == "start" {
+		runInteractiveWizard()
+		return
+	}
+
 	// Parse CLI flags
 	dirFlag := flag.String("dir", ".", "target directory")
 	ignoreFlag := flag.String("ignore", ".gitignore", "custom ignore file")
 	maxSize := flag.Int64("max-size", 50000, "Maximum file size in bytes to include content (default 50KB)")
 	flag.Parse()
 
-	// Initialize IgnoreEngine
-	ignoreEngine := NewIgnoreEngine(*ignoreFlag)
+	runCoreLogic(*dirFlag, *ignoreFlag, *maxSize, os.Stdout)
+}
 
-	// Initialize XML encoder writing directly to stdout
-	encoder := xml.NewEncoder(os.Stdout)
+func runInteractiveWizard() {
+	scanner := bufio.NewScanner(os.Stdin)
+
+	fmt.Print("Enter target directory [default .]: ")
+	scanner.Scan()
+	targetDir := strings.TrimSpace(scanner.Text())
+	if targetDir == "" {
+		targetDir = "."
+	}
+
+	fmt.Print("Enter output file name [default stdout]: ")
+	scanner.Scan()
+	outFileName := strings.TrimSpace(scanner.Text())
+
+	var out io.Writer = os.Stdout
+	if outFileName != "" {
+		f, err := os.Create(outFileName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error creating file: %v\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		out = f
+	}
+
+	runCoreLogic(targetDir, ".gitignore", 50000, out)
+}
+
+func runCoreLogic(targetDir, ignoreFile string, maxSize int64, out io.Writer) {
+	// Initialize IgnoreEngine
+	ignoreEngine := NewIgnoreEngine(ignoreFile)
+
+	// Initialize XML encoder writing directly to the output writer
+	encoder := xml.NewEncoder(out)
 	encoder.Indent("", "  ")
 
 	// Print XML header
-	fmt.Print(xml.Header)
+	fmt.Fprint(out, xml.Header)
 
 	// Define and encode the <repository> root tag
 	rootStart := xml.StartElement{Name: xml.Name{Local: "repository"}}
@@ -60,8 +97,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Get output file's FileInfo to avoid reading our own output file
+	var outFileInfo os.FileInfo
+	if outFile, ok := out.(*os.File); ok {
+		if info, err := outFile.Stat(); err == nil {
+			outFileInfo = info
+		}
+	}
+
 	// Run the directory traversal engine stub
-	if err := traverseDirectory(*dirFlag, ignoreEngine, encoder, *maxSize); err != nil {
+	if err := traverseDirectory(targetDir, ignoreEngine, encoder, out, maxSize, outFileInfo); err != nil {
 		fmt.Fprintf(os.Stderr, "error during directory traversal: %v\n", err)
 		os.Exit(1)
 	}
@@ -72,23 +117,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Flush buffered data to stdout
+	// Flush buffered data
 	if err := encoder.Flush(); err != nil {
 		fmt.Fprintf(os.Stderr, "error flushing xml encoder: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Add a trailing newline
-	fmt.Println()
+	fmt.Fprintln(out)
 }
 
 func printStartupBanner() {
-	fmt.Fprintln(os.Stderr, startupBanner)
+	fmt.Fprint(os.Stderr, startupBanner)
 }
 
 // traverseDirectory uses filepath.WalkDir to streamingly read and encode files
 // without reading the entire directory into memory.
-func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Encoder, maxSize int64) error {
+func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Encoder, out io.Writer, maxSize int64, outFileInfo os.FileInfo) error {
 	return filepath.WalkDir(targetDir, func(path string, d fs.DirEntry, err error) error {
 		// Skip unreadable paths safely without crashing the pipeline
 		if err != nil {
@@ -109,6 +154,12 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 			info, err := d.Info()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error getting info for %q: %v\n", path, err)
+				return nil
+			}
+
+			// Prevent infinite feedback loop by skipping the output file itself
+			if outFileInfo != nil && os.SameFile(info, outFileInfo) {
+				fmt.Fprintf(os.Stderr, "Kord: Skipping output file %s\n", path)
 				return nil
 			}
 
@@ -184,28 +235,28 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 				fmt.Fprintf(os.Stderr, "error flushing before raw write for %q: %v\n", path, err)
 			}
 
-			// Write CDATA start and stream raw bytes directly to stdout to avoid buffering
-			if _, err := fmt.Fprint(os.Stdout, "<![CDATA["); err != nil {
+			// Write CDATA start and stream raw bytes directly to out to avoid buffering
+			if _, err := fmt.Fprint(out, "<![CDATA["); err != nil {
 				fmt.Fprintf(os.Stderr, "error writing cdata start for %q: %v\n", path, err)
 			}
 
 			// If we already read some prefix bytes, write them first
 			if n > 0 {
-				if _, err := os.Stdout.Write(prefix[:n]); err != nil {
+				if _, err := out.Write(prefix[:n]); err != nil {
 					fmt.Fprintf(os.Stderr, "error writing prefix for %q: %v\n", path, err)
 				}
 			}
 
 			// Continue streaming the rest of the file directly using a single preallocated buffer
 			buf := make([]byte, 32*1024)
-			if _, err := io.CopyBuffer(os.Stdout, f, buf); err != nil {
+			if _, err := io.CopyBuffer(out, f, buf); err != nil {
 				if err != io.EOF {
 					fmt.Fprintf(os.Stderr, "error copying file %q: %v\n", path, err)
 				}
 			}
 
 			// Close CDATA and then write end element token via encoder to remain well-formed
-			if _, err := fmt.Fprint(os.Stdout, "]]>"); err != nil {
+			if _, err := fmt.Fprint(out, "]]>"); err != nil {
 				fmt.Fprintf(os.Stderr, "error writing cdata end for %q: %v\n", path, err)
 			}
 
@@ -244,11 +295,20 @@ func NewIgnoreEngine(ignoreFilePath string) *IgnoreEngine {
 	engine.exactDirs[".next"] = true
 	engine.exactDirs["dist"] = true
 	engine.exactDirs["build"] = true
+	engine.exactDirs[".gradle"] = true
+	engine.exactDirs["venv"] = true
+	engine.exactDirs[".venv"] = true
+	engine.exactDirs["target"] = true
+	engine.exactDirs["obj"] = true
+	engine.exactDirs["__pycache__"] = true
+	engine.exactDirs[".dart_tool"] = true
+	engine.exactDirs["Pods"] = true
 
 	// Exclude token-trap files by default
 	engine.suffixes = append(engine.suffixes,
-		".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
+		".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
 		".lock", "go.sum", ".min.js", ".min.css", ".map",
+		".exe", ".dll", ".so", ".dylib", ".bin", ".zip", ".tar.gz", ".rar", ".7z", ".pdf", ".pyc", ".class",
 	)
 
 	content, err := os.ReadFile(ignoreFilePath)
