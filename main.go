@@ -13,6 +13,19 @@ import (
 	"strings"
 )
 
+const startupBanner = `
+░██                                           ░██ 
+░██                                           ░██ 
+░██    ░██    ░███████     ░██░████     ░████████ 
+░██   ░██    ░██    ░██    ░███        ░██    ░██ 
+░███████     ░██    ░██    ░██         ░██    ░██ 
+░██   ░██    ░██    ░██    ░██         ░██   ░███ 
+░██    ░██    ░███████     ░██          ░█████░██ 
+                                                  
+                                                                 
+Kord by Siranta - streaming repository to XML
+`
+
 // File represents a file to be streamed to XML.
 // It has a path attribute and the content as a CDATA body.
 type File struct {
@@ -22,6 +35,8 @@ type File struct {
 }
 
 func main() {
+	printStartupBanner()
+
 	// Parse CLI flags
 	dirFlag := flag.String("dir", ".", "target directory")
 	ignoreFlag := flag.String("ignore", ".gitignore", "custom ignore file")
@@ -67,6 +82,10 @@ func main() {
 	fmt.Println()
 }
 
+func printStartupBanner() {
+	fmt.Fprintln(os.Stderr, startupBanner)
+}
+
 // traverseDirectory uses filepath.WalkDir to streamingly read and encode files
 // without reading the entire directory into memory.
 func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Encoder, maxSize int64) error {
@@ -94,7 +113,13 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 			}
 
 			// 1. The hard size limit
-			if info.Size() > maxSize {
+			ext := strings.ToLower(filepath.Ext(path))
+			currentLimit := maxSize
+			if ext == ".md" || ext == ".txt" || ext == ".mdx" {
+				currentLimit *= 10
+			}
+
+			if info.Size() > currentLimit {
 				// Write the path, but explicitly mark the content as omitted to save context
 				// Do NOT read the file into memory.
 				fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (Size: %d bytes exceeds limit)\n", path, info.Size())
@@ -105,6 +130,23 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 					Attr: []xml.Attr{
 						{Name: xml.Name{Local: "path"}, Value: path},
 						{Name: xml.Name{Local: "omitted"}, Value: "size_limit_exceeded"},
+					},
+				})
+				if err == nil {
+					encoder.EncodeToken(xml.EndElement{Name: xml.Name{Local: "file"}})
+				}
+				return nil
+			}
+
+			// 2. Skip SVG file contents
+			if strings.ToLower(filepath.Ext(path)) == ".svg" {
+				fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (SVG bloat omitted)\n", path)
+
+				err = encoder.EncodeToken(xml.StartElement{
+					Name: xml.Name{Local: "file"},
+					Attr: []xml.Attr{
+						{Name: xml.Name{Local: "path"}, Value: path},
+						{Name: xml.Name{Local: "omitted"}, Value: "svg_bloat_omitted"},
 					},
 				})
 				if err == nil {
@@ -199,6 +241,15 @@ func NewIgnoreEngine(ignoreFilePath string) *IgnoreEngine {
 	engine.exactDirs[".git"] = true
 	engine.exactDirs["node_modules"] = true
 	engine.exactDirs["vendor"] = true
+	engine.exactDirs[".next"] = true
+	engine.exactDirs["dist"] = true
+	engine.exactDirs["build"] = true
+
+	// Exclude token-trap files by default
+	engine.suffixes = append(engine.suffixes,
+		".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
+		".lock", "go.sum", ".min.js", ".min.css", ".map",
+	)
 
 	content, err := os.ReadFile(ignoreFilePath)
 	if err != nil {
