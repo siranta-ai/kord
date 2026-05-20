@@ -132,6 +132,23 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 				return nil
 			}
 
+			// 2. Skip SVG file contents
+			if strings.ToLower(filepath.Ext(path)) == ".svg" {
+				fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (SVG bloat omitted)\n", path)
+
+				err = encoder.EncodeToken(xml.StartElement{
+					Name: xml.Name{Local: "file"},
+					Attr: []xml.Attr{
+						{Name: xml.Name{Local: "path"}, Value: path},
+						{Name: xml.Name{Local: "omitted"}, Value: "svg_bloat_omitted"},
+					},
+				})
+				if err == nil {
+					encoder.EncodeToken(xml.EndElement{Name: xml.Name{Local: "file"}})
+				}
+				return nil
+			}
+
 			f, readErr := os.Open(path)
 			if readErr != nil {
 				fmt.Fprintf(os.Stderr, "error opening file %q: %v\n", path, readErr)
@@ -218,6 +235,9 @@ func NewIgnoreEngine(ignoreFilePath string) *IgnoreEngine {
 	engine.exactDirs[".git"] = true
 	engine.exactDirs["node_modules"] = true
 	engine.exactDirs["vendor"] = true
+
+	// Exclude SVG files by default to prevent token bloat
+	engine.suffixes = append(engine.suffixes, ".svg")
 
 	content, err := os.ReadFile(ignoreFilePath)
 	if err != nil {
