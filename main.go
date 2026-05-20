@@ -235,9 +235,15 @@ func NewIgnoreEngine(ignoreFilePath string) *IgnoreEngine {
 	engine.exactDirs[".git"] = true
 	engine.exactDirs["node_modules"] = true
 	engine.exactDirs["vendor"] = true
+	engine.exactDirs[".next"] = true
+	engine.exactDirs["dist"] = true
+	engine.exactDirs["build"] = true
 
-	// Exclude SVG files by default to prevent token bloat
-	engine.suffixes = append(engine.suffixes, ".svg")
+	// Exclude token-trap files by default
+	engine.suffixes = append(engine.suffixes,
+		".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
+		".lock", "go.sum", ".min.js", ".min.css", ".map",
+	)
 
 	content, err := os.ReadFile(ignoreFilePath)
 	if err != nil {
