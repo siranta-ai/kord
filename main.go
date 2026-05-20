@@ -37,21 +37,58 @@ type File struct {
 func main() {
 	printStartupBanner()
 
+	if len(os.Args) > 1 && os.Args[1] == "start" {
+		runInteractiveWizard()
+		return
+	}
+
 	// Parse CLI flags
 	dirFlag := flag.String("dir", ".", "target directory")
 	ignoreFlag := flag.String("ignore", ".gitignore", "custom ignore file")
 	maxSize := flag.Int64("max-size", 50000, "Maximum file size in bytes to include content (default 50KB)")
 	flag.Parse()
 
-	// Initialize IgnoreEngine
-	ignoreEngine := NewIgnoreEngine(*ignoreFlag)
+	runCoreLogic(*dirFlag, *ignoreFlag, *maxSize, os.Stdout)
+}
 
-	// Initialize XML encoder writing directly to stdout
-	encoder := xml.NewEncoder(os.Stdout)
+func runInteractiveWizard() {
+	scanner := bufio.NewScanner(os.Stdin)
+
+	fmt.Print("Enter target directory [default .]: ")
+	scanner.Scan()
+	targetDir := strings.TrimSpace(scanner.Text())
+	if targetDir == "" {
+		targetDir = "."
+	}
+
+	fmt.Print("Enter output file name [default stdout]: ")
+	scanner.Scan()
+	outFileName := strings.TrimSpace(scanner.Text())
+
+	var out io.Writer = os.Stdout
+	if outFileName != "" {
+		f, err := os.Create(outFileName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error creating file: %v\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		out = f
+	}
+
+	runCoreLogic(targetDir, ".gitignore", 50000, out)
+}
+
+func runCoreLogic(targetDir, ignoreFile string, maxSize int64, out io.Writer) {
+	// Initialize IgnoreEngine
+	ignoreEngine := NewIgnoreEngine(ignoreFile)
+
+	// Initialize XML encoder writing directly to the output writer
+	encoder := xml.NewEncoder(out)
 	encoder.Indent("", "  ")
 
 	// Print XML header
-	fmt.Print(xml.Header)
+	fmt.Fprint(out, xml.Header)
 
 	// Define and encode the <repository> root tag
 	rootStart := xml.StartElement{Name: xml.Name{Local: "repository"}}
@@ -61,7 +98,7 @@ func main() {
 	}
 
 	// Run the directory traversal engine stub
-	if err := traverseDirectory(*dirFlag, ignoreEngine, encoder, *maxSize); err != nil {
+	if err := traverseDirectory(targetDir, ignoreEngine, encoder, maxSize); err != nil {
 		fmt.Fprintf(os.Stderr, "error during directory traversal: %v\n", err)
 		os.Exit(1)
 	}
@@ -72,14 +109,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Flush buffered data to stdout
+	// Flush buffered data
 	if err := encoder.Flush(); err != nil {
 		fmt.Fprintf(os.Stderr, "error flushing xml encoder: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Add a trailing newline
-	fmt.Println()
+	fmt.Fprintln(out)
 }
 
 func printStartupBanner() {
