@@ -128,7 +128,7 @@ func runCoreLogic(targetDir, ignoreFile string, maxSize int64, out io.Writer) {
 }
 
 func printStartupBanner() {
-	fmt.Fprintln(os.Stderr, startupBanner)
+	fmt.Fprint(os.Stderr, startupBanner)
 }
 
 // traverseDirectory uses filepath.WalkDir to streamingly read and encode files
@@ -306,7 +306,7 @@ func NewIgnoreEngine(ignoreFilePath string) *IgnoreEngine {
 
 	// Exclude token-trap files by default
 	engine.suffixes = append(engine.suffixes,
-		".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
+		".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
 		".lock", "go.sum", ".min.js", ".min.css", ".map",
 		".exe", ".dll", ".so", ".dylib", ".bin", ".zip", ".tar.gz", ".rar", ".7z", ".pdf", ".pyc", ".class",
 	)
