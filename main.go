@@ -113,7 +113,13 @@ func traverseDirectory(targetDir string, engine *IgnoreEngine, encoder *xml.Enco
 			}
 
 			// 1. The hard size limit
-			if info.Size() > maxSize {
+			ext := strings.ToLower(filepath.Ext(path))
+			currentLimit := maxSize
+			if ext == ".md" || ext == ".txt" || ext == ".mdx" {
+				currentLimit *= 10
+			}
+
+			if info.Size() > currentLimit {
 				// Write the path, but explicitly mark the content as omitted to save context
 				// Do NOT read the file into memory.
 				fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (Size: %d bytes exceeds limit)\n", path, info.Size())
