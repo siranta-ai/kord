@@ -304,12 +304,16 @@ func NewIgnoreEngine(ignoreFilePath string) *IgnoreEngine {
 	engine.exactDirs[".dart_tool"] = true
 	engine.exactDirs["Pods"] = true
 
-	// Exclude token-trap files by default
+	// Exclude token-trap and secret files by default
 	engine.suffixes = append(engine.suffixes,
 		".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
 		".lock", "go.sum", ".min.js", ".min.css", ".map",
 		".exe", ".dll", ".so", ".dylib", ".bin", ".zip", ".tar.gz", ".rar", ".7z", ".pdf", ".pyc", ".class",
+		".pem", ".key",
 	)
+
+	// Ignore environment config files starting with .env
+	engine.prefixes = append(engine.prefixes, ".env")
 
 	content, err := os.ReadFile(ignoreFilePath)
 	if err != nil {
