@@ -67,6 +67,9 @@ func runInteractiveWizard() {
 
 	var out io.Writer = os.Stdout
 	if outFileName != "" {
+		if !strings.HasSuffix(strings.ToLower(outFileName), ".xml") {
+			outFileName += ".xml"
+		}
 		f, err := os.Create(outFileName)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error creating file: %v\n", err)
@@ -125,6 +128,9 @@ func runCoreLogic(targetDir, ignoreFile string, maxSize int64, out io.Writer) {
 
 	// Add a trailing newline
 	fmt.Fprintln(out)
+
+	// Print success signal to stderr so it does not corrupt the stdout XML stream
+	fmt.Fprintln(os.Stderr, "Kord: XML conversion completed successfully!")
 }
 
 func printStartupBanner() {
