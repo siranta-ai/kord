@@ -10,16 +10,16 @@ Kord is a compiled, standalone binary. You don't need Go, Node, or Python instal
 
 **Mac / Linux:**
 ```bash
-curl -sL https://github.com/siranta/kord/releases/latest/download/kord-linux-amd64 -o kord
+curl -sL https://github.com/siranta-ai/kord/releases/latest/download/kord-linux-amd64 -o kord
 chmod +x kord
 sudo mv kord /usr/local/bin/
 ```
 *(Swap `linux-amd64` with `darwin-arm64` for Apple Silicon)*
 
 **Windows:**
-Download `kord-windows-amd64.exe` directly from [GitHub Releases](https://github.com/siranta/kord/releases) and drop it in your PATH.
+Download `kord-windows-amd64.exe` directly from [GitHub Releases](https://github.com/siranta-ai/kord/releases) and drop it in your PATH.
 
-*(Already have Go? Just run `go install github.com/siranta/kord@latest`)*
+*(Already have Go? Just run `go install github.com/siranta-ai/kord@latest`)*
 
 ---
 
@@ -32,18 +32,27 @@ Kord is a zero-dependency CLI written in Go that acts as a streaming ingestion p
 ## Usage
 
 Generate your context payload in one command:
+*(Note: If you are on Windows and haven't added Kord to your PATH, use `.\kord` instead of `kord`)*
 
 ```bash
+# Specify a custom ignore file
+kord -ignore custom.gitignore
+
+# Output in JSON or Markdown format instead of XML
+kord -format markdown -dir . > codebase.md
+
+# Pipe the output directly to a file
 kord -dir . > codebase.xml
 ```
 
 **Core Flags:**
 
-| Flag | Default | Description |
-| :--- | :--- | :--- |
-| `-dir` | `.` | Target directory to traverse. |
-| `-ignore` | `.gitignore` | Custom ignore rules file. |
-| `-max-size` | `50000` | Max bytes per file before content is omitted. |
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `-dir` | `string` | `.` | The target directory to traverse. |
+| `-format`, `-f` | `string` | `xml` | Selection of layout formats. Options: `xml`, `json`, `markdown`. |
+| `-ignore` | `string` | `.gitignore` | The path to the ignore rules file to parse. |
+| `--max-file-size` | `string` | `1MB` | The maximum size allowed for standard file contents before they are omitted (supports B, KB, MB, GB). |
 
 Want interactive hand-holding? Run:
 ```bash

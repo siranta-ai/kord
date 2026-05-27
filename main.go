@@ -16,6 +16,8 @@ import (
 	"strings"
 )
 
+var Version = "dev"
+
 const startupBanner = `
 ░██                                           ░██ 
 ░██                                           ░██ 
@@ -104,6 +106,7 @@ func main() {
 
 func printStartupBanner() {
 	fmt.Fprint(os.Stderr, startupBanner)
+	fmt.Fprintf(os.Stderr, "Version: %s\n\n", Version)
 }
 
 func parseConfig() (*Config, bool) {
@@ -353,7 +356,7 @@ func runCoreLogic(config *Config, out io.Writer) {
 	}
 
 	if !config.Quiet {
-		fmt.Fprintln(os.Stderr, "Kord: XML conversion completed successfully!")
+		fmt.Fprintf(os.Stderr, "Kord: %s conversion completed successfully!\n", strings.ToUpper(config.Format))
 	}
 }
 
@@ -369,7 +372,7 @@ func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, o
 		if err := encoder.EncodeToken(rootStart); err != nil {
 			return err
 		}
-		
+
 		if config.IncludeToc {
 			tocText := generateTOC(config, engine)
 			if err := writeXMLFile(tc, encoder, "toc", "", "", tocText, ""); err != nil {
