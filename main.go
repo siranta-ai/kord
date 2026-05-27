@@ -353,7 +353,7 @@ func runCoreLogic(config *Config, out io.Writer) {
 	}
 
 	if !config.Quiet {
-		fmt.Fprintln(os.Stderr, "Kord: XML conversion completed successfully!")
+		fmt.Fprintf(os.Stderr, "Kord: %s conversion completed successfully!\n", strings.ToUpper(config.Format))
 	}
 }
 
