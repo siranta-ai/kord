@@ -169,7 +169,7 @@ omitted="svg_bloat_omitted"
 This lets the LLM know the file's presence and paths without consuming valuable attention window tokens.
 
 ### 4. Direct Binary Bypass
-Before parsing any file, Kord pulls the first `512` bytes of data and scans for a null byte (`0x00`). If a null byte is found, the file is tagged as binary (compressed files, compiled binaries, non-UTF-8 assets) and is omitted completely.
+When parsing a file, Kord scans its contents for a null byte (`0x00`). If a null byte is found, the file is tagged as binary (compressed files, compiled binaries, non-UTF-8 assets) and is omitted completely.
 
 ### 5. Content Compression
 If `--compress` is activated, Kord removes unnecessary leading spaces, trailing carriage returns, and blank lines from code files before streaming them.

@@ -18,7 +18,7 @@ Kord operates as a streaming ingestion pipeline. Unlike traditional tools that l
 
 1.  **Streaming XML Output**: Processes and encodes files on-the-fly.
 2.  **Zero-Regex Ignore Engine**: Groups rules into high-performance buckets evaluated using rapid $O(1)$ map lookups and simple string comparisons instead of heavy regular expression patterns.
-3.  **Binary File Detection**: Reads the first 512 bytes of files to check for a null byte (`0x00`), skipping binary assets dynamically without bloating the stream.
+3.  **Binary File Detection**: Scans file contents for a null byte (`0x00`), skipping binary assets dynamically without bloating the stream.
 4.  **Flexible Size Constraints**: Skips content for files exceeding configured limits, but prints their file path tag with an explanation, keeping the LLM informed of their existence.
 5.  **Interactive Setup Wizard**: Provides a step-by-step interactive CLI mode.
 6.  **Static Compilation & No Dependencies**: Relies solely on the Go standard library, compiling down to a single standalone binary.
@@ -58,8 +58,8 @@ kord
 # Run against a specific directory
 kord -dir /path/to/project
 
-# Specify a custom size limit (e.g., 20KB base size limit instead of 50KB)
-kord -max-size 20000
+# Specify a custom size limit (e.g., 250KB base size limit instead of 1MB)
+kord --max-file-size 250KB
 
 # Specify a custom ignore file
 kord -ignore custom.gitignore
@@ -82,7 +82,7 @@ kord start
 | :--- | :--- | :--- | :--- |
 | `-dir` | `string` | `.` | The target directory to traverse. |
 | `-ignore` | `string` | `.gitignore` | The path to the ignore rules file to parse. |
-| `-max-size` | `int64` | `50000` | The maximum size (in bytes) allowed for standard file contents before they are omitted. |
+| `--max-file-size` | `string` | `1MB` | The maximum size allowed for standard file contents before they are omitted (supports B, KB, MB, GB). |
 
 ---
 
@@ -118,9 +118,9 @@ When traversing a directory, Kord applies the following filters to each path:
 If you output the streaming XML to a file located inside the directory being traversed (e.g. `kord > output.xml`), Kord compares the file descriptor (`FileInfo`) of the output writer with each walked file. It automatically skips reading its own output file to prevent an infinite recursive write loop.
 
 ### 2. Suffix Size Multipliers
-For human-readable documentation files, Kord automatically extends the file size limit by **10x** of the configured `-max-size` flag:
-*   **Markdown/Text Files** (`.md`, `.txt`, `.mdx`): Limit = `-max-size` $\times$ 10.
-*   **All Other Files**: Limit = `-max-size`.
+For human-readable documentation files, Kord automatically extends the file size limit by **10x** of the configured `--max-file-size` flag:
+*   **Markdown/Text Files** (`.md`, `.txt`, `.mdx`): Limit = `--max-file-size` $\times$ 10.
+*   **All Other Files**: Limit = `--max-file-size`.
 
 Files exceeding this threshold are written as empty tags with `omitted="size_limit_exceeded"`.
 
@@ -128,14 +128,14 @@ Files exceeding this threshold are written as empty tags with `omitted="size_lim
 SVG images contain extensive XML coordinates which are unreadable by LLMs and inflate context length. Kord intercepts `.svg` files, skips reading their contents, and writes them with `omitted="svg_bloat_omitted"` to ensure the LLM knows the file is present without receiving the bloat.
 
 ### 4. Binary File Check
-Before reading any file, Kord pulls the first 512 bytes. If a null byte (`0x00`) is found, the file is classified as binary (e.g., compressed data, compiled binaries, non-UTF-8 assets) and is completely excluded from the XML output.
+When reading a file, Kord scans its contents. If a null byte (`0x00`) is found, the file is classified as binary (e.g., compressed data, compiled binaries, non-UTF-8 assets) and is completely excluded from the XML output.
 
 ---
 
 ## Developer Guide
 
 ### Prerequisites
-*   Go 1.25 or higher
+*   Go 1.22 or higher
 
 ### Running Tests
 
