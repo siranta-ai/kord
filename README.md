@@ -97,4 +97,4 @@ Clean XML. Safe `CDATA`. LLMs parse this natively with zero hallucination.
 
 Kord is your local open-source workhorse. But when you need to scale this to production fleets, manage persistent enterprise agent memory, and keep vector databases synced across thousands of repos without manual CLI dumps—you need **Siranta Gateway**. 
 
-[Learn more about Siranta Gateway here](#) *(Link to Gateway)*.
+[Learn more about Siranta Gateway here](https://siranta.vercel.app/) *(Link to Gateway)*.
