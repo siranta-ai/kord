@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-const Version = "v1.0.2"
+var Version = "dev"
 
 const startupBanner = `
 ░██                                           ░██ 

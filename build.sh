@@ -10,8 +10,11 @@ mkdir -p bin
 # Enforce static compilation across all platforms
 export CGO_ENABLED=0
 
-# Strip debug symbols to reduce binary size
-LDFLAGS="-s -w"
+# Get version from git tag, fallback to dev if not available
+VERSION=$(git describe --tags --always 2>/dev/null || echo "dev")
+
+# Strip debug symbols and inject version to reduce binary size
+LDFLAGS="-s -w -X main.Version=$VERSION"
 
 # 1. Linux (amd64)
 echo "Building for Linux (amd64)..."
