@@ -34,16 +34,24 @@ Kord is a zero-dependency CLI written in Go that acts as a streaming ingestion p
 Generate your context payload in one command:
 
 ```bash
+# Specify a custom ignore file
+kord -ignore custom.gitignore
+
+# Output in JSON or Markdown format instead of XML
+kord -format markdown -dir . > codebase.md
+
+# Pipe the output directly to a file
 kord -dir . > codebase.xml
 ```
 
 **Core Flags:**
 
-| Flag | Default | Description |
-| :--- | :--- | :--- |
-| `-dir` | `.` | Target directory to traverse. |
-| `-ignore` | `.gitignore` | Custom ignore rules file. |
-| `-max-size` | `50000` | Max bytes per file before content is omitted. |
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `-dir` | `string` | `.` | The target directory to traverse. |
+| `-format`, `-f` | `string` | `xml` | Selection of layout formats. Options: `xml`, `json`, `markdown`. |
+| `-ignore` | `string` | `.gitignore` | The path to the ignore rules file to parse. |
+| `--max-file-size` | `string` | `1MB` | The maximum size allowed for standard file contents before they are omitted (supports B, KB, MB, GB). |
 
 Want interactive hand-holding? Run:
 ```bash
