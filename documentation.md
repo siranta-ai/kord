@@ -66,6 +66,7 @@ go build -ldflags="-s -w" -o kord main.go
 ## 3. CLI Reference & Commands
 
 ### Basic Command Invocations
+*(Note: If you are on Windows and haven't added Kord to your PATH, use `.\kord` instead of `kord`)*
 
 ```bash
 # Basic execution: Traverse the current directory and output XML directly to stdout

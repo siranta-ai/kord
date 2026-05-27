@@ -32,6 +32,7 @@ Kord is a zero-dependency CLI written in Go that acts as a streaming ingestion p
 ## Usage
 
 Generate your context payload in one command:
+*(Note: If you are on Windows and haven't added Kord to your PATH, use `.\kord` instead of `kord`)*
 
 ```bash
 # Specify a custom ignore file
