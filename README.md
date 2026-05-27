@@ -10,16 +10,16 @@ Kord is a compiled, standalone binary. You don't need Go, Node, or Python instal
 
 **Mac / Linux:**
 ```bash
-curl -sL https://github.com/siranta/kord/releases/latest/download/kord-linux-amd64 -o kord
+curl -sL https://github.com/siranta-ai/kord/releases/latest/download/kord-linux-amd64 -o kord
 chmod +x kord
 sudo mv kord /usr/local/bin/
 ```
 *(Swap `linux-amd64` with `darwin-arm64` for Apple Silicon)*
 
 **Windows:**
-Download `kord-windows-amd64.exe` directly from [GitHub Releases](https://github.com/siranta/kord/releases) and drop it in your PATH.
+Download `kord-windows-amd64.exe` directly from [GitHub Releases](https://github.com/siranta-ai/kord/releases) and drop it in your PATH.
 
-*(Already have Go? Just run `go install github.com/siranta/kord@latest`)*
+*(Already have Go? Just run `go install github.com/siranta-ai/kord@latest`)*
 
 ---
 
