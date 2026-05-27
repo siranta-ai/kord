@@ -31,3 +31,10 @@ logs/
 *.tmp
 temp/
 cache/
+
+# Go artifacts
+*.exe
+kord
+
+# Output
+*.xml

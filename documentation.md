@@ -14,7 +14,6 @@ Engineered explicitly for feeding complete repository contexts into Large Langua
 5. [Traversal Logic & Optimizations](#5-traversal-logic--optimizations)
 6. [Output Formats & Schema Specifications](#6-output-formats--schema-specifications)
 7. [Developer Reference (Codebase Architecture)](#7-developer-reference-codebase-architecture)
-8. [Testing & Quality Assurance](#8-testing--quality-assurance)
 
 ---
 
@@ -169,7 +168,7 @@ omitted="svg_bloat_omitted"
 This lets the LLM know the file's presence and paths without consuming valuable attention window tokens.
 
 ### 4. Direct Binary Bypass
-Before parsing any file, Kord pulls the first `512` bytes of data and scans for a null byte (`0x00`). If a null byte is found, the file is tagged as binary (compressed files, compiled binaries, non-UTF-8 assets) and is omitted completely.
+When parsing a file, Kord scans its contents for a null byte (`0x00`). If a null byte is found, the file is tagged as binary (compressed files, compiled binaries, non-UTF-8 assets) and is omitted completely.
 
 ### 5. Content Compression
 If `--compress` is activated, Kord removes unnecessary leading spaces, trailing carriage returns, and blank lines from code files before streaming them.
@@ -326,24 +325,4 @@ type Config struct {
 3.  **Traverse Execution (`traverseDirectory()`)**: Employs Go's `filepath.WalkDir` to traverse filesystems in a non-recursive path-accumulation loop.
 4.  **Token Estimation (`TokenCounter`)**: A tracking wrapper around the output `io.Writer` that monitors total accumulated bytes. To optimize parsing speed, tokens are estimated as `bytes / 4`. If this estimate exceeds `--max-tokens`, traversal is halted immediately.
 
----
 
-## 8. Testing & Quality Assurance
-
-The repository maintains an automated, zero-external-dependency suite of unit and integration tests inside [main_test.go](file:///d:/Siranta/Kord/Kord/main_test.go).
-
-### Running Tests
-Execute the tests using standard Go tools:
-```bash
-# Run all test cases in verbose mode
-go test -v ./...
-```
-
-### Covered Test Cases
-*   **`TestParseSize`**: Assures size configurations (such as `1MB`, `250KB`, `100B`) parse to correct byte counts, and checks error reporting on invalid string values.
-*   **`TestIgnoreEngineRules`**: Creates a temporary workspace environment containing mock configurations of `.gitignore`, `.sirantaignore`, and command-line rules to verify bucket evaluation logic.
-*   **`TestMinLines`**: Validates that files below the `--min-lines` threshold are excluded from the output.
-*   **`TestTokenLimit`**: Verifies that the traversal pipeline halts gracefully and inserts warning tags if the byte stream exceeds the token budget.
-*   **`TestCompress`**: Checks that leading space removal, empty carriage return deletions, and string normalization behave correctly under `--compress`.
-*   **`TestFormats`**: Asserts formatting output layout structure (XML, JSON, Markdown) matches expectations, and validates that schema elements wrap with specialized `<schema>` tags if `--include-schemas` is enabled.
-*   **`TestTraverseLoopPrevention`**: Simulates the output file loop scenario and asserts that Kord successfully skips scanning its own output file.
