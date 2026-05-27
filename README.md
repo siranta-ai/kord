@@ -137,14 +137,7 @@ When reading a file, Kord scans its contents. If a null byte (`0x00`) is found, 
 ### Prerequisites
 *   Go 1.22 or higher
 
-### Running Tests
 
-We maintain a comprehensive suite of tests covering ignore rules, XML streaming format, size limit multipliers, binary filters, and self-loop detection.
-
-```bash
-# Run all tests in verbose mode
-go test -v ./...
-```
 
 ### Compilation
 
