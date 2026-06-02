@@ -12,8 +12,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 var Version = "dev"
@@ -63,12 +66,15 @@ type Config struct {
 // TokenCounter wraps an io.Writer and tracks bytes written.
 type TokenCounter struct {
 	W     io.Writer
-	Count int
+	Count int64
+	mu    sync.Mutex
 }
 
 func (tc *TokenCounter) Write(p []byte) (n int, err error) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 	n, err = tc.W.Write(p)
-	tc.Count += n
+	atomic.AddInt64(&tc.Count, int64(n))
 	return n, err
 }
 
@@ -360,6 +366,11 @@ func runCoreLogic(config *Config, out io.Writer) {
 	}
 }
 
+type FileJob struct {
+	Path string
+	Info os.FileInfo
+}
+
 func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, outFileInfo os.FileInfo) error {
 	var firstFileWritten bool
 	var encoder *xml.Encoder
@@ -430,6 +441,116 @@ func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, o
 		gitStatusMap = getGitStatusMap(config.TargetDir)
 	}
 
+	var writeMu sync.Mutex
+	var limitExceeded atomic.Bool
+	jobs := make(chan FileJob, 1000)
+	var wg sync.WaitGroup
+	numWorkers := runtime.NumCPU()
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					if !config.Quiet {
+						fmt.Fprintf(os.Stderr, "Worker recovered from panic: %v\n", r)
+					}
+				}
+			}()
+
+			for job := range jobs {
+				if limitExceeded.Load() {
+					continue
+				}
+
+				path := job.Path
+				info := job.Info
+
+				if config.MaxTokens > 0 && int(atomic.LoadInt64(&tc.Count)/4) >= config.MaxTokens {
+					limitExceeded.Store(true)
+					continue
+				}
+
+				if outFileInfo != nil && os.SameFile(info, outFileInfo) {
+					if !config.Quiet {
+						fmt.Fprintf(os.Stderr, "Kord: Skipping output file %s\n", path)
+					}
+					continue
+				}
+
+				relPath, _ := filepath.Rel(config.TargetDir, path)
+				relPath = filepath.ToSlash(relPath)
+
+				if config.MinLines > 0 {
+					lines, err := countLines(path)
+					if err != nil {
+						if !config.Quiet {
+							fmt.Fprintf(os.Stderr, "error counting lines for %q: %v\n", path, err)
+						}
+						continue
+					}
+					if lines < config.MinLines {
+						continue
+					}
+				}
+
+				tagName := "file"
+				if config.IncludeSchemas && isSchemaFile(path) {
+					tagName = "schema"
+				}
+
+				var status string
+				if config.IncludeDiff {
+					absPath, err := filepath.Abs(path)
+					if err == nil {
+						status = gitStatusMap[absPath]
+					}
+				}
+
+				ext := strings.ToLower(filepath.Ext(path))
+				currentLimit := config.MaxFileSize
+				if ext == ".md" || ext == ".txt" || ext == ".mdx" {
+					currentLimit *= 10
+				}
+
+				var writeErr error
+				if info.Size() > currentLimit {
+					if !config.Quiet {
+						fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (Size: %d bytes exceeds limit)\n", path, info.Size())
+					}
+					writeMu.Lock()
+					writeErr = writeRecord(config, tc, encoder, tagName, relPath, status, "", "size_limit_exceeded", &firstFileWritten)
+					writeMu.Unlock()
+				} else if ext == ".svg" {
+					if !config.Quiet {
+						fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (SVG bloat omitted)\n", path)
+					}
+					writeMu.Lock()
+					writeErr = writeRecord(config, tc, encoder, tagName, relPath, status, "", "svg_bloat_omitted", &firstFileWritten)
+					writeMu.Unlock()
+				} else {
+					content, err := getFileContent(path, config.Compress)
+					if err != nil {
+						if err != ErrBinaryFile && !config.Quiet {
+							fmt.Fprintf(os.Stderr, "error reading file %q: %v\n", path, err)
+						}
+						continue
+					}
+					writeMu.Lock()
+					writeErr = writeRecord(config, tc, encoder, tagName, relPath, status, content, "", &firstFileWritten)
+					writeMu.Unlock()
+				}
+				
+				if writeErr != nil {
+					if !config.Quiet {
+						fmt.Fprintf(os.Stderr, "error writing output for %q: %v\n", path, writeErr)
+					}
+				}
+			}
+		}()
+	}
+
 	err := filepath.WalkDir(config.TargetDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if !config.Quiet {
@@ -438,7 +559,7 @@ func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, o
 			return nil
 		}
 
-		if config.MaxTokens > 0 && (tc.Count/4) >= config.MaxTokens {
+		if limitExceeded.Load() {
 			return ErrTokenLimitExceeded
 		}
 
@@ -457,79 +578,14 @@ func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, o
 				}
 				return nil
 			}
-
-			if outFileInfo != nil && os.SameFile(info, outFileInfo) {
-				if !config.Quiet {
-					fmt.Fprintf(os.Stderr, "Kord: Skipping output file %s\n", path)
-				}
-				return nil
-			}
-
-			relPath, _ := filepath.Rel(config.TargetDir, path)
-			relPath = filepath.ToSlash(relPath)
-
-			if config.MinLines > 0 {
-				lines, err := countLines(path)
-				if err != nil {
-					if !config.Quiet {
-						fmt.Fprintf(os.Stderr, "error counting lines for %q: %v\n", path, err)
-					}
-					return nil
-				}
-				if lines < config.MinLines {
-					return nil
-				}
-			}
-
-			tagName := "file"
-			if config.IncludeSchemas && isSchemaFile(path) {
-				tagName = "schema"
-			}
-
-			var status string
-			if config.IncludeDiff {
-				absPath, err := filepath.Abs(path)
-				if err == nil {
-					status = gitStatusMap[absPath]
-				}
-			}
-
-			ext := strings.ToLower(filepath.Ext(path))
-			currentLimit := config.MaxFileSize
-			if ext == ".md" || ext == ".txt" || ext == ".mdx" {
-				currentLimit *= 10
-			}
-
-			if info.Size() > currentLimit {
-				if !config.Quiet {
-					fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (Size: %d bytes exceeds limit)\n", path, info.Size())
-				}
-				return writeRecord(config, tc, encoder, tagName, relPath, status, "", "size_limit_exceeded", &firstFileWritten)
-			}
-
-			if ext == ".svg" {
-				if !config.Quiet {
-					fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (SVG bloat omitted)\n", path)
-				}
-				return writeRecord(config, tc, encoder, tagName, relPath, status, "", "svg_bloat_omitted", &firstFileWritten)
-			}
-
-			content, err := getFileContent(path, config.Compress)
-			if err != nil {
-				if err == ErrBinaryFile {
-					return nil
-				}
-				if !config.Quiet {
-					fmt.Fprintf(os.Stderr, "error reading file %q: %v\n", path, err)
-				}
-				return nil
-			}
-
-			return writeRecord(config, tc, encoder, tagName, relPath, status, content, "", &firstFileWritten)
+			jobs <- FileJob{Path: path, Info: info}
 		}
 
 		return nil
 	})
+
+	close(jobs)
+	wg.Wait()
 
 	if err != nil && err != ErrTokenLimitExceeded {
 		return err
