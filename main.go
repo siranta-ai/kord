@@ -757,11 +757,13 @@ func writeRecord(config *Config, tc *TokenCounter, encoder *xml.Encoder, tagName
 
 // IgnoreEngine parses and evaluates .gitignore rules.
 type IgnoreEngine struct {
-	exactDirs      map[string]bool
-	exactFiles     map[string]bool
-	suffixes       []string
-	prefixes       []string
-	customPatterns []string
+	exactDirs   map[string]bool
+	exactFiles  map[string]bool
+	suffixes    []string
+	prefixes    []string
+	dirPrefixes []string
+	baseGlobs   []string
+	pathGlobs   []string
 }
 
 // NewIgnoreEngine creates and populates IgnoreEngine.
@@ -769,8 +771,6 @@ func NewIgnoreEngine(config *Config) *IgnoreEngine {
 	engine := &IgnoreEngine{
 		exactDirs:  make(map[string]bool),
 		exactFiles: make(map[string]bool),
-		suffixes:   make([]string, 0),
-		prefixes:   make([]string, 0),
 	}
 
 	if config.DefaultIgnores {
@@ -842,7 +842,16 @@ func (ie *IgnoreEngine) addPattern(pattern string) {
 	}
 
 	if strings.ContainsAny(pattern, "*?[]") || strings.Contains(pattern, "/") {
-		ie.customPatterns = append(ie.customPatterns, pattern)
+		cleanPat := strings.TrimSuffix(pattern, "/**")
+		if strings.HasSuffix(pattern, "/**") {
+			ie.dirPrefixes = append(ie.dirPrefixes, cleanPat)
+		} else if isDirRule {
+			ie.dirPrefixes = append(ie.dirPrefixes, cleanPat)
+		} else if strings.Contains(pattern, "/") {
+			ie.pathGlobs = append(ie.pathGlobs, pattern)
+		} else {
+			ie.baseGlobs = append(ie.baseGlobs, pattern)
+		}
 	} else {
 		if strings.HasPrefix(pattern, "*") {
 			ie.suffixes = append(ie.suffixes, strings.TrimPrefix(pattern, "*"))
@@ -884,37 +893,37 @@ func (ie *IgnoreEngine) IsIgnored(path string, isDir bool, targetDir string) boo
 		}
 	}
 
-	relPath, err := filepath.Rel(targetDir, path)
-	if err != nil {
-		relPath = path
-	}
-	relPath = filepath.ToSlash(relPath)
-
-	// Check if any parent directory component of the relative path is in ie.exactDirs
-	parts := strings.Split(relPath, "/")
-	for i := 0; i < len(parts)-1; i++ {
-		if ie.exactDirs[parts[i]] {
+	for _, bg := range ie.baseGlobs {
+		if matched, _ := filepath.Match(bg, base); matched {
 			return true
 		}
 	}
 
-	for _, pat := range ie.customPatterns {
-		cleanPat := strings.TrimSuffix(pat, "/**")
-		if strings.HasSuffix(pat, "/**") {
-			if strings.HasPrefix(relPath, cleanPat+"/") || relPath == cleanPat {
-				return true
-			}
+	if len(ie.dirPrefixes) == 0 && len(ie.pathGlobs) == 0 {
+		return false
+	}
+
+	relPath := path
+	if strings.HasPrefix(path, targetDir) {
+		relPath = filepath.ToSlash(path[len(targetDir):])
+		if len(relPath) > 0 && relPath[0] == '/' {
+			relPath = relPath[1:]
 		}
-		if strings.HasSuffix(pat, "/") {
-			cleanPat = strings.TrimSuffix(pat, "/")
-			if strings.HasPrefix(relPath, cleanPat+"/") || relPath == cleanPat {
-				return true
-			}
+		if relPath == "" {
+			relPath = "."
 		}
-		if matched, _ := filepath.Match(pat, base); matched {
+	} else {
+		relPath = filepath.ToSlash(relPath)
+	}
+
+	for _, dp := range ie.dirPrefixes {
+		if relPath == dp || strings.HasPrefix(relPath, dp+"/") {
 			return true
 		}
-		if matched, _ := filepath.Match(pat, relPath); matched {
+	}
+
+	for _, pg := range ie.pathGlobs {
+		if matched, _ := filepath.Match(pg, relPath); matched {
 			return true
 		}
 	}
