@@ -40,6 +40,8 @@ var ErrTokenLimitExceeded = fmt.Errorf("token limit exceeded")
 // ErrBinaryFile is returned when a binary file is detected.
 var ErrBinaryFile = fmt.Errorf("binary file skipped")
 
+var xmlReplacer = strings.NewReplacer("]]>", "]]]]><![CDATA[>")
+
 // Config represents all CLI settings.
 type Config struct {
 	TargetDir         string
@@ -645,9 +647,12 @@ func writeXMLFile(out io.Writer, encoder *xml.Encoder, tagName string, path stri
 		if _, err := fmt.Fprint(out, "<![CDATA["); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprint(out, content); err != nil {
+		
+		safeContent := xmlReplacer.Replace(content)
+		if _, err := fmt.Fprint(out, safeContent); err != nil {
 			return err
 		}
+		
 		if _, err := fmt.Fprint(out, "]]>"); err != nil {
 			return err
 		}
@@ -701,12 +706,18 @@ func writeRecord(config *Config, tc *TokenCounter, encoder *xml.Encoder, tagName
 		} else {
 			fmt.Fprintln(tc)
 			lang := getMarkdownLang(path)
-			fmt.Fprintf(tc, "```%s\n", lang)
+			
+			fence := "```"
+			for strings.Contains(content, fence) {
+				fence += "`"
+			}
+			
+			fmt.Fprintf(tc, "%s%s\n", fence, lang)
 			fmt.Fprint(tc, content)
 			if !strings.HasSuffix(content, "\n") {
 				fmt.Fprintln(tc)
 			}
-			fmt.Fprintln(tc, "```")
+			fmt.Fprintln(tc, fence)
 			fmt.Fprintln(tc)
 		}
 	}
