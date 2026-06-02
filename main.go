@@ -60,6 +60,7 @@ type Config struct {
 	Format            string
 	Compress          bool
 	IncludeToc        bool
+	FollowSymlinks    bool
 
 	// Internal fields
 	MaxFileSize int64
@@ -156,6 +157,7 @@ func parseConfig() (*Config, bool) {
 
 	flag.BoolVar(&config.Compress, "compress", false, "")
 	flag.BoolVar(&config.IncludeToc, "include-toc", false, "")
+	flag.BoolVar(&config.FollowSymlinks, "follow-symlinks", false, "")
 
 	var dirFlag string
 	flag.StringVar(&dirFlag, "dir", ".", "")
@@ -569,6 +571,35 @@ func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, o
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+
+		if d.Type()&fs.ModeSymlink != 0 {
+			if !config.FollowSymlinks {
+				return nil
+			}
+			target, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				if !config.Quiet {
+					fmt.Fprintf(os.Stderr, "Kord: Error resolving symlink %q: %v\n", path, err)
+				}
+				return nil
+			}
+			rel, err := filepath.Rel(config.TargetDir, target)
+			if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+				if !config.Quiet {
+					fmt.Fprintf(os.Stderr, "Kord: Warning: Skipping symlink %q (points outside target directory: %s)\n", path, target)
+				}
+				return nil
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				return nil
+			}
+			if info.IsDir() {
+				return nil
+			}
+			jobs <- FileJob{Path: path, Info: info}
 			return nil
 		}
 
