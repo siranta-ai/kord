@@ -85,27 +85,68 @@ func TestXMLEncoder_ExtremeInput(t *testing.T) {
 
 	// An extreme string with CDATA terminator ]]> and other special characters
 	extremeInput := "Normal text <![CDATA[ malicious ]]> \x00\x01\x02 \uFFFF <<>> &lt;&gt; & ]]>"
-	
+
 	firstFileWritten := false
 	config := &Config{Format: "xml"}
-	
+
 	tc := &TokenCounter{W: &buf}
-	
+
 	err := writeRecord(config, tc, encoder, "file", "test.txt", "", extremeInput, "", &firstFileWritten)
 	if err != nil {
 		t.Fatalf("Failed to write XML record: %v", err)
 	}
-	
+
 	encoder.Flush()
-	
+
 	output := buf.String()
-	
+
 	// Check if the output properly replaced ]]> with ]]]]><![CDATA[>
 	if strings.Contains(output, "]]> \x00") {
 		t.Errorf("Found unescaped CDATA terminator in output")
 	}
-	
+
 	if !strings.Contains(output, "]]]]><![CDATA[>") {
 		t.Errorf("Expected escaped CDATA terminator, got: %s", output)
+	}
+}
+
+func TestResolveWizardOutputPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		sourceDir   string
+		destination string
+		outputName  string
+		want        string
+	}{
+		{
+			name:        "defaults destination to source directory",
+			sourceDir:   filepath.Join("repo", "source"),
+			destination: "",
+			outputName:  "context",
+			want:        filepath.Join("repo", "source", "context.xml"),
+		},
+		{
+			name:        "keeps absolute output path",
+			sourceDir:   "repo",
+			destination: "repo",
+			outputName:  filepath.Join(string(os.PathSeparator), "tmp", "context.xml"),
+			want:        filepath.Join(string(os.PathSeparator), "tmp", "context.xml"),
+		},
+		{
+			name:        "stdout bypasses file creation",
+			sourceDir:   "repo",
+			destination: "repo",
+			outputName:  "stdout",
+			want:        "stdout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveWizardOutputPath(tt.sourceDir, tt.destination, tt.outputName)
+			if got != tt.want {
+				t.Fatalf("resolveWizardOutputPath() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

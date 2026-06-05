@@ -305,12 +305,16 @@ func parseSize(s string) (int64, error) {
 func runInteractiveWizard() {
 	scanner := bufio.NewScanner(os.Stdin)
 
-	fmt.Print("Enter target directory [default .]: ")
+	fmt.Print("Enter source directory [default .]: ")
 	scanner.Scan()
 	targetDir := strings.TrimSpace(scanner.Text())
 	if targetDir == "" {
 		targetDir = "."
 	}
+
+	fmt.Print("Enter destination directory [default source directory]: ")
+	scanner.Scan()
+	destinationDir := strings.TrimSpace(scanner.Text())
 
 	fmt.Print("Enter output file name [default stdout]: ")
 	scanner.Scan()
@@ -331,19 +335,46 @@ func runInteractiveWizard() {
 
 	var out io.Writer = os.Stdout
 	if outFileName != "stdout" {
-		if !strings.HasSuffix(strings.ToLower(outFileName), ".xml") {
-			outFileName += ".xml"
+		if destinationDir == "" {
+			destinationDir = targetDir
 		}
-		f, err := os.Create(outFileName)
+
+		outputPath := resolveWizardOutputPath(targetDir, destinationDir, outFileName)
+		if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "error creating destination directory: %v\n", err)
+			os.Exit(1)
+		}
+		f, err := os.Create(outputPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error creating file: %v\n", err)
 			os.Exit(1)
 		}
 		defer f.Close()
 		out = f
+		config.Output = outputPath
 	}
 
 	runCoreLogic(config, out)
+}
+
+func resolveWizardOutputPath(sourceDir, destinationDir, outputName string) string {
+	if outputName == "" || outputName == "stdout" {
+		return "stdout"
+	}
+	if destinationDir == "" {
+		destinationDir = sourceDir
+	}
+	if destinationDir == "" {
+		destinationDir = "."
+	}
+	outputPath := outputName
+	if !strings.HasSuffix(strings.ToLower(outputPath), ".xml") {
+		outputPath += ".xml"
+	}
+	if filepath.IsAbs(outputPath) {
+		return outputPath
+	}
+	return filepath.Join(destinationDir, outputPath)
 }
 
 func runCoreLogic(config *Config, out io.Writer) {
@@ -545,7 +576,7 @@ func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, o
 					writeErr = writeRecord(config, tc, encoder, tagName, relPath, status, content, "", &firstFileWritten)
 					writeMu.Unlock()
 				}
-				
+
 				if writeErr != nil {
 					if !config.Quiet {
 						fmt.Fprintf(os.Stderr, "error writing output for %q: %v\n", path, writeErr)
@@ -678,12 +709,12 @@ func writeXMLFile(out io.Writer, encoder *xml.Encoder, tagName string, path stri
 		if _, err := fmt.Fprint(out, "<![CDATA["); err != nil {
 			return err
 		}
-		
+
 		safeContent := xmlReplacer.Replace(content)
 		if _, err := fmt.Fprint(out, safeContent); err != nil {
 			return err
 		}
-		
+
 		if _, err := fmt.Fprint(out, "]]>"); err != nil {
 			return err
 		}
@@ -737,12 +768,12 @@ func writeRecord(config *Config, tc *TokenCounter, encoder *xml.Encoder, tagName
 		} else {
 			fmt.Fprintln(tc)
 			lang := getMarkdownLang(path)
-			
+
 			fence := "```"
 			for strings.Contains(content, fence) {
 				fence += "`"
 			}
-			
+
 			fmt.Fprintf(tc, "%s%s\n", fence, lang)
 			fmt.Fprint(tc, content)
 			if !strings.HasSuffix(content, "\n") {
