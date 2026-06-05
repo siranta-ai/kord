@@ -12,8 +12,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 var Version = "dev"
@@ -37,6 +40,8 @@ var ErrTokenLimitExceeded = fmt.Errorf("token limit exceeded")
 // ErrBinaryFile is returned when a binary file is detected.
 var ErrBinaryFile = fmt.Errorf("binary file skipped")
 
+var xmlReplacer = strings.NewReplacer("]]>", "]]]]><![CDATA[>")
+
 // Config represents all CLI settings.
 type Config struct {
 	TargetDir         string
@@ -55,6 +60,7 @@ type Config struct {
 	Format            string
 	Compress          bool
 	IncludeToc        bool
+	FollowSymlinks    bool
 
 	// Internal fields
 	MaxFileSize int64
@@ -63,12 +69,15 @@ type Config struct {
 // TokenCounter wraps an io.Writer and tracks bytes written.
 type TokenCounter struct {
 	W     io.Writer
-	Count int
+	Count int64
+	mu    sync.Mutex
 }
 
 func (tc *TokenCounter) Write(p []byte) (n int, err error) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 	n, err = tc.W.Write(p)
-	tc.Count += n
+	atomic.AddInt64(&tc.Count, int64(n))
 	return n, err
 }
 
@@ -148,6 +157,7 @@ func parseConfig() (*Config, bool) {
 
 	flag.BoolVar(&config.Compress, "compress", false, "")
 	flag.BoolVar(&config.IncludeToc, "include-toc", false, "")
+	flag.BoolVar(&config.FollowSymlinks, "follow-symlinks", false, "")
 
 	var dirFlag string
 	flag.StringVar(&dirFlag, "dir", ".", "")
@@ -295,12 +305,16 @@ func parseSize(s string) (int64, error) {
 func runInteractiveWizard() {
 	scanner := bufio.NewScanner(os.Stdin)
 
-	fmt.Print("Enter target directory [default .]: ")
+	fmt.Print("Enter source directory [default .]: ")
 	scanner.Scan()
 	targetDir := strings.TrimSpace(scanner.Text())
 	if targetDir == "" {
 		targetDir = "."
 	}
+
+	fmt.Print("Enter destination directory [default source directory]: ")
+	scanner.Scan()
+	destinationDir := strings.TrimSpace(scanner.Text())
 
 	fmt.Print("Enter output file name [default stdout]: ")
 	scanner.Scan()
@@ -321,19 +335,46 @@ func runInteractiveWizard() {
 
 	var out io.Writer = os.Stdout
 	if outFileName != "stdout" {
-		if !strings.HasSuffix(strings.ToLower(outFileName), ".xml") {
-			outFileName += ".xml"
+		if destinationDir == "" {
+			destinationDir = targetDir
 		}
-		f, err := os.Create(outFileName)
+
+		outputPath := resolveWizardOutputPath(targetDir, destinationDir, outFileName)
+		if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "error creating destination directory: %v\n", err)
+			os.Exit(1)
+		}
+		f, err := os.Create(outputPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error creating file: %v\n", err)
 			os.Exit(1)
 		}
 		defer f.Close()
 		out = f
+		config.Output = outputPath
 	}
 
 	runCoreLogic(config, out)
+}
+
+func resolveWizardOutputPath(sourceDir, destinationDir, outputName string) string {
+	if outputName == "" || outputName == "stdout" {
+		return "stdout"
+	}
+	if destinationDir == "" {
+		destinationDir = sourceDir
+	}
+	if destinationDir == "" {
+		destinationDir = "."
+	}
+	outputPath := outputName
+	if !strings.HasSuffix(strings.ToLower(outputPath), ".xml") {
+		outputPath += ".xml"
+	}
+	if filepath.IsAbs(outputPath) {
+		return outputPath
+	}
+	return filepath.Join(destinationDir, outputPath)
 }
 
 func runCoreLogic(config *Config, out io.Writer) {
@@ -358,6 +399,11 @@ func runCoreLogic(config *Config, out io.Writer) {
 	if !config.Quiet {
 		fmt.Fprintf(os.Stderr, "Kord: %s conversion completed successfully!\n", strings.ToUpper(config.Format))
 	}
+}
+
+type FileJob struct {
+	Path string
+	Info os.FileInfo
 }
 
 func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, outFileInfo os.FileInfo) error {
@@ -430,6 +476,116 @@ func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, o
 		gitStatusMap = getGitStatusMap(config.TargetDir)
 	}
 
+	var writeMu sync.Mutex
+	var limitExceeded atomic.Bool
+	jobs := make(chan FileJob, 1000)
+	var wg sync.WaitGroup
+	numWorkers := runtime.NumCPU()
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					if !config.Quiet {
+						fmt.Fprintf(os.Stderr, "Worker recovered from panic: %v\n", r)
+					}
+				}
+			}()
+
+			for job := range jobs {
+				if limitExceeded.Load() {
+					continue
+				}
+
+				path := job.Path
+				info := job.Info
+
+				if config.MaxTokens > 0 && int(atomic.LoadInt64(&tc.Count)/4) >= config.MaxTokens {
+					limitExceeded.Store(true)
+					continue
+				}
+
+				if outFileInfo != nil && os.SameFile(info, outFileInfo) {
+					if !config.Quiet {
+						fmt.Fprintf(os.Stderr, "Kord: Skipping output file %s\n", path)
+					}
+					continue
+				}
+
+				relPath, _ := filepath.Rel(config.TargetDir, path)
+				relPath = filepath.ToSlash(relPath)
+
+				if config.MinLines > 0 {
+					lines, err := countLines(path)
+					if err != nil {
+						if !config.Quiet {
+							fmt.Fprintf(os.Stderr, "error counting lines for %q: %v\n", path, err)
+						}
+						continue
+					}
+					if lines < config.MinLines {
+						continue
+					}
+				}
+
+				tagName := "file"
+				if config.IncludeSchemas && isSchemaFile(path) {
+					tagName = "schema"
+				}
+
+				var status string
+				if config.IncludeDiff {
+					absPath, err := filepath.Abs(path)
+					if err == nil {
+						status = gitStatusMap[absPath]
+					}
+				}
+
+				ext := strings.ToLower(filepath.Ext(path))
+				currentLimit := config.MaxFileSize
+				if ext == ".md" || ext == ".txt" || ext == ".mdx" {
+					currentLimit *= 10
+				}
+
+				var writeErr error
+				if info.Size() > currentLimit {
+					if !config.Quiet {
+						fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (Size: %d bytes exceeds limit)\n", path, info.Size())
+					}
+					writeMu.Lock()
+					writeErr = writeRecord(config, tc, encoder, tagName, relPath, status, "", "size_limit_exceeded", &firstFileWritten)
+					writeMu.Unlock()
+				} else if ext == ".svg" {
+					if !config.Quiet {
+						fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (SVG bloat omitted)\n", path)
+					}
+					writeMu.Lock()
+					writeErr = writeRecord(config, tc, encoder, tagName, relPath, status, "", "svg_bloat_omitted", &firstFileWritten)
+					writeMu.Unlock()
+				} else {
+					content, err := getFileContent(path, config.Compress)
+					if err != nil {
+						if err != ErrBinaryFile && !config.Quiet {
+							fmt.Fprintf(os.Stderr, "error reading file %q: %v\n", path, err)
+						}
+						continue
+					}
+					writeMu.Lock()
+					writeErr = writeRecord(config, tc, encoder, tagName, relPath, status, content, "", &firstFileWritten)
+					writeMu.Unlock()
+				}
+
+				if writeErr != nil {
+					if !config.Quiet {
+						fmt.Fprintf(os.Stderr, "error writing output for %q: %v\n", path, writeErr)
+					}
+				}
+			}
+		}()
+	}
+
 	err := filepath.WalkDir(config.TargetDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if !config.Quiet {
@@ -438,7 +594,7 @@ func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, o
 			return nil
 		}
 
-		if config.MaxTokens > 0 && (tc.Count/4) >= config.MaxTokens {
+		if limitExceeded.Load() {
 			return ErrTokenLimitExceeded
 		}
 
@@ -446,6 +602,35 @@ func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, o
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+
+		if d.Type()&fs.ModeSymlink != 0 {
+			if !config.FollowSymlinks {
+				return nil
+			}
+			target, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				if !config.Quiet {
+					fmt.Fprintf(os.Stderr, "Kord: Error resolving symlink %q: %v\n", path, err)
+				}
+				return nil
+			}
+			rel, err := filepath.Rel(config.TargetDir, target)
+			if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+				if !config.Quiet {
+					fmt.Fprintf(os.Stderr, "Kord: Warning: Skipping symlink %q (points outside target directory: %s)\n", path, target)
+				}
+				return nil
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				return nil
+			}
+			if info.IsDir() {
+				return nil
+			}
+			jobs <- FileJob{Path: path, Info: info}
 			return nil
 		}
 
@@ -457,79 +642,14 @@ func traverseDirectory(config *Config, engine *IgnoreEngine, tc *TokenCounter, o
 				}
 				return nil
 			}
-
-			if outFileInfo != nil && os.SameFile(info, outFileInfo) {
-				if !config.Quiet {
-					fmt.Fprintf(os.Stderr, "Kord: Skipping output file %s\n", path)
-				}
-				return nil
-			}
-
-			relPath, _ := filepath.Rel(config.TargetDir, path)
-			relPath = filepath.ToSlash(relPath)
-
-			if config.MinLines > 0 {
-				lines, err := countLines(path)
-				if err != nil {
-					if !config.Quiet {
-						fmt.Fprintf(os.Stderr, "error counting lines for %q: %v\n", path, err)
-					}
-					return nil
-				}
-				if lines < config.MinLines {
-					return nil
-				}
-			}
-
-			tagName := "file"
-			if config.IncludeSchemas && isSchemaFile(path) {
-				tagName = "schema"
-			}
-
-			var status string
-			if config.IncludeDiff {
-				absPath, err := filepath.Abs(path)
-				if err == nil {
-					status = gitStatusMap[absPath]
-				}
-			}
-
-			ext := strings.ToLower(filepath.Ext(path))
-			currentLimit := config.MaxFileSize
-			if ext == ".md" || ext == ".txt" || ext == ".mdx" {
-				currentLimit *= 10
-			}
-
-			if info.Size() > currentLimit {
-				if !config.Quiet {
-					fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (Size: %d bytes exceeds limit)\n", path, info.Size())
-				}
-				return writeRecord(config, tc, encoder, tagName, relPath, status, "", "size_limit_exceeded", &firstFileWritten)
-			}
-
-			if ext == ".svg" {
-				if !config.Quiet {
-					fmt.Fprintf(os.Stderr, "Kord: Skipping content of %s (SVG bloat omitted)\n", path)
-				}
-				return writeRecord(config, tc, encoder, tagName, relPath, status, "", "svg_bloat_omitted", &firstFileWritten)
-			}
-
-			content, err := getFileContent(path, config.Compress)
-			if err != nil {
-				if err == ErrBinaryFile {
-					return nil
-				}
-				if !config.Quiet {
-					fmt.Fprintf(os.Stderr, "error reading file %q: %v\n", path, err)
-				}
-				return nil
-			}
-
-			return writeRecord(config, tc, encoder, tagName, relPath, status, content, "", &firstFileWritten)
+			jobs <- FileJob{Path: path, Info: info}
 		}
 
 		return nil
 	})
+
+	close(jobs)
+	wg.Wait()
 
 	if err != nil && err != ErrTokenLimitExceeded {
 		return err
@@ -589,9 +709,12 @@ func writeXMLFile(out io.Writer, encoder *xml.Encoder, tagName string, path stri
 		if _, err := fmt.Fprint(out, "<![CDATA["); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprint(out, content); err != nil {
+
+		safeContent := xmlReplacer.Replace(content)
+		if _, err := fmt.Fprint(out, safeContent); err != nil {
 			return err
 		}
+
 		if _, err := fmt.Fprint(out, "]]>"); err != nil {
 			return err
 		}
@@ -645,12 +768,18 @@ func writeRecord(config *Config, tc *TokenCounter, encoder *xml.Encoder, tagName
 		} else {
 			fmt.Fprintln(tc)
 			lang := getMarkdownLang(path)
-			fmt.Fprintf(tc, "```%s\n", lang)
+
+			fence := "```"
+			for strings.Contains(content, fence) {
+				fence += "`"
+			}
+
+			fmt.Fprintf(tc, "%s%s\n", fence, lang)
 			fmt.Fprint(tc, content)
 			if !strings.HasSuffix(content, "\n") {
 				fmt.Fprintln(tc)
 			}
-			fmt.Fprintln(tc, "```")
+			fmt.Fprintln(tc, fence)
 			fmt.Fprintln(tc)
 		}
 	}
@@ -659,11 +788,13 @@ func writeRecord(config *Config, tc *TokenCounter, encoder *xml.Encoder, tagName
 
 // IgnoreEngine parses and evaluates .gitignore rules.
 type IgnoreEngine struct {
-	exactDirs      map[string]bool
-	exactFiles     map[string]bool
-	suffixes       []string
-	prefixes       []string
-	customPatterns []string
+	exactDirs   map[string]bool
+	exactFiles  map[string]bool
+	suffixes    []string
+	prefixes    []string
+	dirPrefixes []string
+	baseGlobs   []string
+	pathGlobs   []string
 }
 
 // NewIgnoreEngine creates and populates IgnoreEngine.
@@ -671,8 +802,6 @@ func NewIgnoreEngine(config *Config) *IgnoreEngine {
 	engine := &IgnoreEngine{
 		exactDirs:  make(map[string]bool),
 		exactFiles: make(map[string]bool),
-		suffixes:   make([]string, 0),
-		prefixes:   make([]string, 0),
 	}
 
 	if config.DefaultIgnores {
@@ -744,7 +873,16 @@ func (ie *IgnoreEngine) addPattern(pattern string) {
 	}
 
 	if strings.ContainsAny(pattern, "*?[]") || strings.Contains(pattern, "/") {
-		ie.customPatterns = append(ie.customPatterns, pattern)
+		cleanPat := strings.TrimSuffix(pattern, "/**")
+		if strings.HasSuffix(pattern, "/**") {
+			ie.dirPrefixes = append(ie.dirPrefixes, cleanPat)
+		} else if isDirRule {
+			ie.dirPrefixes = append(ie.dirPrefixes, cleanPat)
+		} else if strings.Contains(pattern, "/") {
+			ie.pathGlobs = append(ie.pathGlobs, pattern)
+		} else {
+			ie.baseGlobs = append(ie.baseGlobs, pattern)
+		}
 	} else {
 		if strings.HasPrefix(pattern, "*") {
 			ie.suffixes = append(ie.suffixes, strings.TrimPrefix(pattern, "*"))
@@ -786,37 +924,37 @@ func (ie *IgnoreEngine) IsIgnored(path string, isDir bool, targetDir string) boo
 		}
 	}
 
-	relPath, err := filepath.Rel(targetDir, path)
-	if err != nil {
-		relPath = path
-	}
-	relPath = filepath.ToSlash(relPath)
-
-	// Check if any parent directory component of the relative path is in ie.exactDirs
-	parts := strings.Split(relPath, "/")
-	for i := 0; i < len(parts)-1; i++ {
-		if ie.exactDirs[parts[i]] {
+	for _, bg := range ie.baseGlobs {
+		if matched, _ := filepath.Match(bg, base); matched {
 			return true
 		}
 	}
 
-	for _, pat := range ie.customPatterns {
-		cleanPat := strings.TrimSuffix(pat, "/**")
-		if strings.HasSuffix(pat, "/**") {
-			if strings.HasPrefix(relPath, cleanPat+"/") || relPath == cleanPat {
-				return true
-			}
+	if len(ie.dirPrefixes) == 0 && len(ie.pathGlobs) == 0 {
+		return false
+	}
+
+	relPath := path
+	if strings.HasPrefix(path, targetDir) {
+		relPath = filepath.ToSlash(path[len(targetDir):])
+		if len(relPath) > 0 && relPath[0] == '/' {
+			relPath = relPath[1:]
 		}
-		if strings.HasSuffix(pat, "/") {
-			cleanPat = strings.TrimSuffix(pat, "/")
-			if strings.HasPrefix(relPath, cleanPat+"/") || relPath == cleanPat {
-				return true
-			}
+		if relPath == "" {
+			relPath = "."
 		}
-		if matched, _ := filepath.Match(pat, base); matched {
+	} else {
+		relPath = filepath.ToSlash(relPath)
+	}
+
+	for _, dp := range ie.dirPrefixes {
+		if relPath == dp || strings.HasPrefix(relPath, dp+"/") {
 			return true
 		}
-		if matched, _ := filepath.Match(pat, relPath); matched {
+	}
+
+	for _, pg := range ie.pathGlobs {
+		if matched, _ := filepath.Match(pg, relPath); matched {
 			return true
 		}
 	}
